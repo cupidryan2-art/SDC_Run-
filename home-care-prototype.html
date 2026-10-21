@@ -36,6 +36,7 @@
       body{align-items:stretch}
       .phone{width:100%;height:100%;border-radius:0;box-shadow:none}
     }
+    .concept select{font-size:11px;padding:2px 4px;border-radius:6px}
     .concept{font-size:11px;text-align:center;padding:6px 12px;background:var(--soft);color:var(--muted);padding-top:calc(6px + env(safe-area-inset-top,0px))}
 
     header.top{display:flex;align-items:center;justify-content:space-between;padding:14px 20px 10px}
@@ -162,7 +163,8 @@
 </head>
 <body>
 <div class="phone" id="phone">
-  <div class="concept">Concept prototype for the Township of Tomorrow hackathon. Prices and residents are sample data.</div>
+  <div class="concept">Concept prototype for the Township of Tomorrow hackathon. Prices and residents are sample data.
+    <label>Weather: <select id="wx" aria-label="Weather source"><option value="live">Live</option><option value="storm">Demo: heavy rain</option><option value="aedes">Demo: after storm</option><option value="calm">Demo: calm</option></select></label></div>
   <header class="top">
     <div class="brand">My Township</div>
     <div class="mode" role="group" aria-label="View as">
@@ -201,7 +203,7 @@
   const MIN_PER_HOME = 45, MAX_HOMES = 6;
 
   /* ---------- sample data ---------- */
-  const HOME = { owner:'Aina', houseNo:12, address:'No. 12, Jalan Cemara 3, Taman Hijau', street:'Jalan Cemara 3' };
+  const HOME = { owner:'Aina', houseNo:12, address:'No. 12, Jalan Cemara 3, Taman Hijau', street:'Jalan Cemara 3', lat:3.107, lon:101.607 };
   const state = {
     mode:'resident', tab:'home', service:'gutter', pickDay:1, groupId:null,
     weather:null, source:'sample',
@@ -233,24 +235,46 @@
       if(!used && r()<0.4) state.slots.push({id:`${c.id}-${d}-${t}`, cleaner:c.id, day:d, time:t});
     }));
   })();
-  const SAMPLE_WEATHER = { past:[18,22,9], days:[0,1,26,34,0.5,0,12], prob:[20,30,80,90,25,15,55] };
+  /* simulated weather for demos and as the offline fallback; past = last 3 days (mm), days = today + 6 */
+  const SCENARIOS = {
+    storm:{ label:'Heavy rain Thu–Fri', past:[3,5,2], days:[0,1,26,34,0.5,0,12], prob:[20,30,80,90,25,15,55] },
+    aedes:{ label:'Dry spell after storm', past:[35,12,8], days:[0,0.5,3,8,2,0,10], prob:[15,20,40,60,30,15,45] },
+    calm: { label:'Calm week', past:[0,2,0], days:[0,3,5,2,0,1,4], prob:[10,25,35,20,10,15,30] },
+  };
+  const simulatedWeather = key => { const s = SCENARIOS[key];
+    return { past:s.past.slice(), days:s.days.map((v,i)=>({date:addDays(TODAY,i), rain:v, prob:s.prob[i]})) }; };
 
   /* ---------- weather (Open-Meteo, free, no key) ---------- */
-  async function loadWeather(){
-    const url = 'https://api.open-meteo.com/v1/forecast?latitude=3.107&longitude=101.607&daily=precipitation_sum,precipitation_probability_max&timezone=Asia%2FKuala_Lumpur&past_days=3&forecast_days=7';
+  const round1 = v => Math.round((v||0)*10)/10;
+  function parseForecast(j){
+    const d = j && j.daily;
+    // past_days=3 + forecast_days=7 -> 10 daily values, first 3 are the past
+    if(!d || !Array.isArray(d.precipitation_sum) || d.precipitation_sum.length<10) throw new Error('unexpected forecast response');
+    const p = d.precipitation_sum, pr = d.precipitation_probability_max || [];
+    return {
+      past: p.slice(0,3).map(round1),
+      days: p.slice(3,10).map((v,i)=>({date:addDays(TODAY,i), rain:round1(v), prob:pr[i+3]??0}))
+    };
+  }
+  async function fetchLiveWeather(){
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${HOME.lat}&longitude=${HOME.lon}&daily=precipitation_sum,precipitation_probability_max&timezone=Asia%2FKuala_Lumpur&past_days=3&forecast_days=7`;
+    const ctrl = new AbortController(), timer = setTimeout(()=>ctrl.abort(), 6000);
     try{
-      const res = await fetch(url);
+      const res = await fetch(url,{signal:ctrl.signal});
       if(!res.ok) throw new Error(res.status);
-      const j = await res.json();
-      const p = j.daily.precipitation_sum, pr = j.daily.precipitation_probability_max;
-      state.weather = {
-        past: p.slice(0,3).map(v=>Math.round((v||0)*10)/10),
-        days: p.slice(3,10).map((v,i)=>({date:addDays(TODAY,i), rain:Math.round((v||0)*10)/10, prob:pr[i+3]??0}))
-      };
-      state.source = 'live';
-    }catch(e){
-      state.weather = { past:SAMPLE_WEATHER.past, days:SAMPLE_WEATHER.days.map((v,i)=>({date:addDays(TODAY,i), rain:v, prob:SAMPLE_WEATHER.prob[i]})) };
-      state.source = 'sample';
+      return parseForecast(await res.json());
+    } finally { clearTimeout(timer); }
+  }
+  /* mode: 'live' | a SCENARIOS key. ?weather=storm in the URL picks the starting mode. */
+  async function loadWeather(mode){
+    mode = mode || new URLSearchParams(location.search).get('weather') || 'live';
+    if(mode!=='live' && !SCENARIOS[mode]) mode = 'live';
+    $('#wx').value = mode;
+    if(mode==='live'){
+      try{ state.weather = await fetchLiveWeather(); state.source = 'live'; }
+      catch(e){ state.weather = simulatedWeather('storm'); state.source = 'sample'; }
+    }else{
+      state.weather = simulatedWeather(mode); state.source = 'demo'; state.scenario = SCENARIOS[mode].label;
     }
     render();
   }
@@ -314,7 +338,7 @@
     const max = Math.max(40, ...w.days.map(d=>d.rain));
     const thrPct = RULES.heavyRainMm/max*100;
     return `<section class="rainbox" aria-label="Rain forecast for the next 7 days">
-    <div class="rainhead"><strong>Rain this week</strong><span class="src">${state.source==='live'?'Live forecast, Open-Meteo':'Sample forecast (offline)'}</span></div>
+    <div class="rainhead"><strong>Rain this week</strong><span class="src">${state.source==='live'?'Live forecast, Open-Meteo':state.source==='demo'?'Demo: '+state.scenario:'Sample forecast (offline)'}</span></div>
     <div class="strip">
       <div class="threshold" style="bottom:${thrPct}%"><span>Heavy ${RULES.heavyRainMm} mm</span></div>
       ${w.days.map(d=>`<div class="bar ${d.rain>=RULES.heavyRainMm?'heavy':''}"><b>${d.rain}</b><i style="height:${Math.max(3,d.rain/max*100)}%"></i></div>`).join('')}
@@ -579,6 +603,7 @@
     };
     reader.readAsDataURL(inp.files[0]);
   });
+  document.addEventListener('change', e=>{ if(e.target.id==='wx') loadWeather(e.target.value); });
   render();
   loadWeather();
 </script>
