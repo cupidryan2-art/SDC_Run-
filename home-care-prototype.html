@@ -150,6 +150,12 @@
     .push .pb{display:block;font-size:13px;color:var(--muted);line-height:1.35}
     @media (prefers-reduced-motion:reduce){.push{transition:none}}
 
+    /* order status: 4-step tracker on a booking */
+    .steps{display:flex;gap:4px;margin-top:8px}
+    .steps i{flex:1;height:4px;border-radius:4px;background:var(--line)}
+    .steps i.on{background:var(--brand)}
+    .stepnote{display:block;font-size:12px;font-weight:600;margin-top:4px}
+
     .back{display:inline-flex;align-items:center;gap:6px;font-weight:600;color:var(--brand);margin:4px 0 10px}
     .progress{height:10px;border-radius:10px;background:var(--soft);overflow:hidden;margin-top:10px;position:relative}
     .progress i{display:block;height:100%;background:var(--brand);border-radius:10px;transition:width .4s}
@@ -332,6 +338,12 @@
   const full = r => r.solo || r.members.length>=MAX_HOMES;
   const deadlineText = r => r.day<=1 ? `today, 9:00 pm` : `${wk(addDays(TODAY,r.day-1))} 9:00 pm`;
   const myRuns = () => state.runs.filter(isMine).sort((a,b)=>a.day-b.day||a.time.localeCompare(b.time));
+  /* order status: 1 booked/waiting, 2 confirmed, 3 cleaner on the way, 4 cleaned (derived from the run) */
+  const ORDER_STEPS = ['Booked','Confirmed','On the way','Cleaned'];
+  const orderStep = r => r.done[HOME.houseNo] ? 4 : r.stage==='enroute' ? 3 : status(r)==='confirmed' ? 2 : 1;
+  const orderNote = r => ({1:`Waiting for ${r.min-r.members.length} more home${r.min-r.members.length>1?'s':''} to join`, 2:`Confirmed for ${dayLabel(r.day)} ${r.time}`, 3:'Cleaner is on the way', 4:'Cleaned, after photo sent'})[orderStep(r)];
+  const stepper = r => `<span class="steps" role="img" aria-label="Order status: ${ORDER_STEPS[orderStep(r)-1]}">${ORDER_STEPS.map((_,i)=>`<i class="${i<orderStep(r)?'on':''}"></i>`).join('')}</span><span class="stepnote">${orderNote(r)}</span>`;
+  const allDone = r => r.members.every(m=>r.done[m]);
   const streetGroups = () => state.runs.filter(r=>!r.solo && r.street===HOME.street && !full(r)).sort((a,b)=>a.day-b.day);
 
   /* ---------- icons ---------- */
@@ -385,7 +397,7 @@
     if(!rs.length) return '<div class="empty">No bookings yet.</div>';
     return rs.map(r=>{
       const doneMe = r.done[HOME.houseNo];
-      return `<div class="row"><span><b>${dayLabel(r.day)} ${r.time}</b><br><span class="note">${SERVICES[r.service].label}, ${r.solo?'just you':r.members.length+' homes on your street'}</span></span>
+      return `<div class="row"><span><b>${dayLabel(r.day)} ${r.time}</b><br><span class="note">${SERVICES[r.service].label}, ${r.solo?'just you':r.members.length+' homes on your street'}</span>${stepper(r)}</span>
     ${doneMe?'<span class="chip low">Cleaned</span>':`<button class="chip ${status(r)==='confirmed'?'low':'open'}" ${r.solo?'':`data-group="${r.id}"`}>RM ${priceFor(r.service,r.members.length)}</button>`}</div>`;
     }).join('');
   }
@@ -500,6 +512,7 @@
       <div class="row"><span><b>${dayLabel(r.day)} ${r.time}</b><br><span class="note">${r.street}, ${stops.length} home${stops.length>1?'s':''} in one trip, ${SERVICES[r.service].label.toLowerCase()}</span></span>
       <span class="chip ${st==='confirmed'?'low':'open'}">${st==='confirmed'?'Confirmed':'Filling'}</span></div>
       <p class="note" style="margin-top:6px">Earnings RM ${priceFor(r.service,stops.length)*stops.length}</p>
+      ${allDone(r)?'':r.stage==='enroute'?'<p style="margin-top:8px"><span class="chip open">On the way, residents notified</span></p>':st==='confirmed'?`<p style="margin-top:8px"><button class="btn small" data-enroute="${r.id}">I’m on my way</button></p>`:''}
       <div style="margin-top:6px">${stops.map((h,i)=>{
         const done = r.done[h];
         return `<div class="stop"><span class="n">${i+1}</span><span><b>No. ${h}</b>${h===HOME.houseNo?' <span class="note">(Aina)</span>':''}<br><span class="note">Arrive about ${addMin(r.time,i*MIN_PER_HOME)}</span></span>
@@ -662,6 +675,11 @@
     else if(t.id==='push') openPush();
   });
   document.addEventListener('change', e=>{ if(e.target.id==='wx') hidePush(); });
+  document.addEventListener('click', e=>{
+    const t = e.target.closest('button[data-enroute]'); if(!t) return;
+    const r = state.runs.find(x=>x.id===t.dataset.enroute); if(!r) return;
+    r.stage = 'enroute'; render(); toast('Residents notified: you are on the way');
+  });
   render();
   loadWeather();
 </script>
